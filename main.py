@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import requests
+from telegram_service import send_telegram_message
 
 app = FastAPI()
 
@@ -13,46 +13,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Прямо здесь укажи твой новый токен и ID
-BOT_TOKEN = "8916954883:AAHZoGA8i2367ZdnJ0zOGXNS0svjgKWAiwE"
-CHAT_ID = "8870678654"
-
-
 class BookmarkRequest(BaseModel):
-  date: str
-  time: str
-  text: str
-
+    date: str
+    time: str
+    send_date: str
+    priority: str
+    text: str
+    file_url: str = None
 
 @app.get("/")
 def health_check():
-  return {"status": "active", "message": "Calendar bot backend is running!"}
-
+    return {"status": "active", "message": "Advanced Calendar Bot Backend is running!"}
 
 @app.post("/api/send-bookmark")
-def send_bookmark(data: BookmarkRequest):
-  message = (
-      f"📌 **Новая закладка из календаря**\n\n"
-      f"📅 **Дата:** {data.date}\n"
-      f"⏰ **Время отправки:** {data.time}\n\n"
-      f"💬 **Текст:**\n{data.text}"
-  )
-
-  url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-  payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
-
-  try:
-    response = requests.post(url, json=payload)
-    response_data = response.json()
-
-    if not response_data.get("ok"):
-      raise HTTPException(
-          status_code=400,
-          detail=f"Telegram API Error: {response_data.get('description')}",
-      )
-
-    return {"success": True, "message": "Закладка успешно отправлена в бот!"}
-  except Exception as e:
-    raise HTTPException(
-        status_code=500, detail=f"Failed to send message: {str(e)}"
-    )
+def create_bookmark(data: BookmarkRequest):
+    try:
+        result = send_telegram_message(
+            date=data.date,
+            time=data.time,
+            send_date=data.send_date,
+            priority=data.priority,
+            text=data.text,
+            file_url=data.file_url
+        )
+        
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=f"Telegram error: {result.get('description')}")
+            
+        return {"success": True, "message": "Заметка успешно отправлена!"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
