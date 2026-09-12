@@ -1,7 +1,7 @@
-from fastapi import FastAPI, HTTPException
+import os
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from telegram_service import send_telegram_message
+import requests
 
 app = FastAPI()
 
@@ -13,30 +13,52 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class BookmarkRequest(BaseModel):
-    date: str
-    time: str
-    send_date: str
-    priority: str
-    text: str
-    file_url: str = None
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8916954883:AAHZoGA8i2367ZdnJ0zOGXNS0svjgKWAiwE")
+CHAT_ID = os.getenv("CHAT_ID", "8870678654")
 
 @app.get("/")
 def health_check():
-    return {"status": "active", "message": "Advanced Calendar Bot Backend is running!"}
+    return {"status": "active", "message": "Calendar Bot Backend is running!"}
 
 @app.post("/api/send-bookmark")
-def create_bookmark(data: BookmarkRequest):
+async def create_bookmark(
+    date: str = Form(...),
+    time: str = Form(...),
+    send_date: str = Form(...),
+    priority: str = Form(...),
+    text: str = Form(...),
+    file: UploadFile = File(None)
+):
+    priority_map = {
+        "high": "🔴 Красный (Высокая)",
+        "medium": "🟠 Оранжевый (Средняя)",
+        "low": "🟢 Зеленый (Низкая)"
+    }
+    p_text = priority_map.get(priority, "⚪ Обычная")
+
+    message = (
+        f"📌 **Новая закладка из календаря**\n\n"
+        f"📅 **Дата события:** {date}\n"
+        f"🚀 **Дата отправки боту:** {send_date} в {time}\n"
+        f"⚡ **Важность:** {p_text}\n\n"
+        f"💬 **Текст:**\n{text}"
+    )
+
     try:
-        result = send_telegram_message(
-            date=data.date,
-            time=data.time,
-            send_date=data.send_date,
-            priority=data.priority,
-            text=data.text,
-            file_url=data.file_url
-        )
-        
+        if file:
+            file_bytes = await file.read()
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
+            files = {"document": (file.filename, file_bytes)}
+            data = {"chat_id": CHAT_ID, "caption": message, "parse_mode": "Markdown"}
+            
+            response = requests.post(url, data=data, files=files)
+        else:
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+            payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
+            
+            response = requests.post(url, json=payload)
+
+        result = response.json()
         if not result.get("ok"):
             raise HTTPException(status_code=400, detail=f"Telegram error: {result.get('description')}")
             
