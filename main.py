@@ -1,4 +1,3 @@
-from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -6,22 +5,22 @@ import requests
 
 app = FastAPI()
 
-# Разрешаем CORS для запросов с твоего фронтенда на Vercel
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # В продакшене можно заменить на URL твоего сайта на Vercel
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-BOT_TOKEN = "8874357037:AAHu8dEk97Mb9NT9MCfpEPCpDj7z6NQnKRo"
+# Прямо здесь укажи твой новый токен и ID
+BOT_TOKEN = "ВСТАВЬ_СЮДА_НОВЫЙ_ТОКЕН_БОТА"
 CHAT_ID = "8870678654"
 
 
 class BookmarkRequest(BaseModel):
-  date: str  # Формат YYYY-MM-DD
-  time: str  # Формат HH:MM
+  date: str
+  time: str
   text: str
 
 
@@ -32,7 +31,6 @@ def health_check():
 
 @app.post("/api/send-bookmark")
 def send_bookmark(data: BookmarkRequest):
-  # Формируем красивое сообщение для Telegram
   message = (
       f"📌 **Новая закладка из календаря**\n\n"
       f"📅 **Дата:** {data.date}\n"
