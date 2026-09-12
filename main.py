@@ -14,7 +14,7 @@ app.add_middleware(
 )
 
 # Прямо здесь укажи твой новый токен и ID
-BOT_TOKEN = "ВСТАВЬ_СЮДА_НОВЫЙ_ТОКЕН_БОТА"
+BOT_TOKEN = "8916954883:AAHZoGA8i2367ZdnJ0zOGXNS0svjgKWAiwE"
 CHAT_ID = "8870678654"
 
 
