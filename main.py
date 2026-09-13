@@ -15,9 +15,11 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
+    FSInputFile,
 )
 from fastapi import FastAPI, Request
 import uvicorn
+import yt_dlp
 
 # НАСТРОЙКИ БОТА И АДМИНЫ
 TOKEN = "8952197475:AAG5cY8qVLGbu-59TuHZuVWtoKg4KzCwjsQ"
@@ -61,7 +63,6 @@ CREATE TABLE IF NOT EXISTS videos (
 """
 )
 
-# Новая таблица для заметок пользователей
 cursor.execute(
     """
 CREATE TABLE IF NOT EXISTS notes (
@@ -75,7 +76,31 @@ CREATE TABLE IF NOT EXISTS notes (
 """
 )
 
-# Проверяем и добавляем колонки при обновлении старой базы
+# Таблица для шпаргалок / базы знаний
+cursor.execute(
+    """
+CREATE TABLE IF NOT EXISTS cheat_sheets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    category TEXT,
+    title TEXT,
+    content TEXT
+)
+"""
+)
+
+# Заполним базу начальными шпаргалками, если она пустая
+cursor.execute("SELECT COUNT(*) FROM cheat_sheets")
+if cursor.fetchone()[0] == 0:
+    sample_cheats = [
+        ("code", "Python: Основы и списки", "<b>Срезы:</b> `text[::-1]` (разворот строки)\n<b>Генераторы:</b> `[x**2 for x in range(10)]`"),
+        ("code", "JavaScript: Асинхронность", "Используй `async/await` вместо цепочек `.then()`. Для запросов лучше применять встроенный `fetch()`."),
+        ("mods", "Minecraft Fabric (Сервер)", "Обязательные моды для оптимизации: **Lithium**, **FerriteCore**, **Krypton**."),
+        ("mods", "Dota 2: Консольные команды", "Показать FPS и пинг: `dota_render_fps 1`\nБыстрый выбор юнита: зажми `Ctrl` + клик."),
+        ("study", "Технология машиностроения", "Основные этапы разработки ТП: анализ чертежа, выбор метода получения заготовки, расчет припусков и режимов резания.")
+    ]
+    cursor.executemany("INSERT INTO cheat_sheets (category, title, content) VALUES (?, ?, ?)", sample_cheats)
+    conn.commit()
+
 for col_def in [
     ("language", "TEXT DEFAULT 'ru'"),
     ("caption", "TEXT"),
@@ -118,7 +143,6 @@ class UserStates(StatesGroup):
     waiting_for_report = State()
 
 
-# Состояния для создания заметки
 class NoteStates(StatesGroup):
     waiting_for_text = State()
     waiting_for_datetime = State()
@@ -131,7 +155,7 @@ LANG_TEXTS = {
         "welcome": (
             "✨ <b>Главное меню бота</b>\n"
             "━━━━━━━━━━━━━━━━━━━\n"
-            "🎬 Выберите категорию, создайте заметку или нажмите кнопку ниже для получения контента.\n"
+            "🎬 Выберите категорию, скачайте медиа по ссылке или найдите шпаргалку.\n"
             "📌 Используйте /help для справки."
         ),
         "choose_lang": "🌍 <b>Выберите язык интерфейса</b>\nChoose your preferred language:",
@@ -140,18 +164,20 @@ LANG_TEXTS = {
         "btn_kids": "🧸 Категория: Kids",
         "btn_porno": "🔥 Категория: Porno",
         "btn_note": "📝 Создать заметку",
+        "btn_cheats": "📚 Шпаргалки / База знаний",
         "btn_help": "🆘 Помощь",
         "btn_contact": "💬 Связь с админом",
         "btn_admin": "🛠 Админ-панель",
         "help_text": (
             "📚 <b>Справочник по командам бота:</b>\n"
             "━━━━━━━━━━━━━━━━━━━\n"
+            "• 🔗 <i>Просто отправь ссылку</i> (YouTube, TikTok и др.) — бот скачает медиа\n"
             "• /random — получить случайный видеоматериал\n"
-            "• /note — создать новую заметку с датой, временем и медиа\n"
-            "• /setting — персональные настройки (вкл/выкл повтор)\n"
+            "• /note — создать новую заметку\n"
+            "• /cheats — открыть базу шпаргалок и материалов\n"
+            "• /setting — персональные настройки\n"
             "• /language — сменить язык интерфейса\n"
             "• /report — отправить сообщение администрации\n"
-            "• /help — вызвать эту справку\n"
             "━━━━━━━━━━━━━━━━━━━"
         ),
         "no_videos": "📭 В выбранной категории пока нет ни одного видеоматериала!",
@@ -191,7 +217,10 @@ def get_user_keyboard(is_admin: bool, lang: str = "ru"):
             InlineKeyboardButton(text=t["btn_porno"], callback_data="watch_porno"),
         ],
         [InlineKeyboardButton(text=t["btn_random"], callback_data="random_video")],
-        [InlineKeyboardButton(text=t["btn_note"], callback_data="start_note")],
+        [
+            InlineKeyboardButton(text=t["btn_note"], callback_data="start_note"),
+            InlineKeyboardButton(text=t["btn_cheats"], callback_data="open_cheats"),
+        ],
         [
             InlineKeyboardButton(text=t["btn_help"], callback_data="help_menu"),
             InlineKeyboardButton(text=t["btn_contact"], callback_data="contact_admin"),
@@ -214,6 +243,155 @@ def get_admin_keyboard():
             [InlineKeyboardButton(text="◀️ В главное меню", callback_data="main_menu")],
         ]
     )
+
+
+# ==========================================
+# ФУНКЦИЯ 1: СКАЧИВАНИЕ ВИДЕО/МУЗЫКИ ПО ССЫЛКЕ (yt-dlp)
+# ==========================================
+@router.message(F.text.regexp(r"https?://[^\s]+"))
+async def download_media_link(message: Message):
+    url = message.text.strip()
+    
+    # Игнорируем длинные служебные ссылки и команды
+    if len(url.split()) > 1 or url.startswith("/"):
+        return
+
+    processing_msg = await message.answer("⏳ <b>Скачиваю медиа по ссылке...</b> Пожалуйста, подождите.", parse_mode="HTML")
+    
+    output_template = f"downloads/media_{message.from_user.id}_%(id)s.%(ext)s"
+    os.makedirs("downloads", exist_ok=True)
+
+    ydl_opts = {
+        'format': 'best[ext=mp4]/best',
+        'outtmpl': output_template,
+        'max_filesize': 50 * 1024 * 1024, # Ограничение до 50 МБ для бесплатного хостинга
+        'noplaylist': True,
+    }
+
+    downloaded_file = None
+    try:
+        def run_dl():
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                return ydl.prepare_filename(info)
+
+        downloaded_file = await asyncio.to_thread(run_dl)
+
+        if downloaded_file and os.path.exists(downloaded_file):
+            file_size = os.path.getsize(downloaded_file)
+            if file_size > 50 * 1024 * 1024:
+                await message.bot.edit_message_text(
+                    "❌ Файл слишком большой (превышает лимит Telegram в 50 МБ).",
+                    chat_id=message.chat.id,
+                    message_id=processing_msg.message_id
+                )
+                return
+
+            input_file = FSInputFile(downloaded_file)
+            
+            # Определяем, аудио это или видео по расширению
+            if downloaded_file.endswith(('.mp3', '.m4a', '.wav', '.opus', '.flac')):
+                await message.answer_audio(audio=input_file, caption="🎵 Скачанная музыка через бота")
+            else:
+                await message.answer_video(video=input_file, caption="📥 Скачанный файл через бота", supports_streaming=True)
+            
+            await message.bot.delete_message(chat_id=message.chat.id, message_id=processing_msg.message_id)
+        else:
+            raise Exception("Файл не был найден после скачивания.")
+
+    except Exception as e:
+        logging.error(f"Ошибка yt-dlp: {e}")
+        try:
+            await message.bot.edit_message_text(
+                f"❌ <b>Не удалось скачать медиа по ссылке.</b>\nВозможные причины: видео защищено, удалено или файл весит больше 50 МБ.",
+                chat_id=message.chat.id,
+                message_id=processing_msg.message_id,
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+    finally:
+        # Очищаем временный файл
+        if downloaded_file and os.path.exists(downloaded_file):
+            try:
+                os.remove(downloaded_file)
+            except Exception:
+                pass
+
+
+# ==========================================
+# ФУНКЦИЯ 2: ШПАРГАЛКИ / БАЗА ЗНАНИЙ
+# ==========================================
+@router.message(Command("cheats"))
+@router.callback_query(F.data == "open_cheats")
+async def cmd_cheats(event: Message | CallbackQuery):
+    message = event.message if isinstance(event, CallbackQuery) else event
+    if isinstance(event, CallbackQuery):
+        await event.answer()
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="💻 Программирование", callback_data="cheat_cat_code"),
+                InlineKeyboardButton(text="🎮 Игровые моды", callback_data="cheat_cat_mods"),
+            ],
+            [
+                InlineKeyboardButton(text="📚 Учеба / Колледж", callback_data="cheat_cat_study"),
+            ],
+            [InlineKeyboardButton(text="◀️ Главное меню", callback_data="main_menu_fixed")]
+        ]
+    )
+    
+    text = "📚 <b>База знаний и шпаргалок</b>\nВыберите интересующую вас категорию:"
+    if isinstance(event, CallbackQuery):
+        await message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    else:
+        await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("cheat_cat_"))
+async def show_cheat_category(callback: CallbackQuery):
+    cat_code = callback.data.split("_")[2]
+    
+    cursor.execute("SELECT id, title FROM cheat_sheets WHERE category = ?", (cat_code,))
+    cheats = cursor.fetchall()
+
+    keyboard = []
+    for c_id, title in cheats:
+        keyboard.append([InlineKeyboardButton(text=f"📌 {title}", callback_data=f"cheat_view_{c_id}")])
+    
+    keyboard.append([InlineKeyboardButton(text="◀️ Назад к категориям", callback_data="open_cheats")])
+
+    await callback.message.edit_text(
+        f"📂 <b>Категория: {cat_code.upper()}</b>\nВыберите материал для чтения:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("cheat_view_"))
+async def view_cheat_item(callback: CallbackQuery):
+    cheat_id = int(callback.data.split("_")[2])
+    
+    cursor.execute("SELECT category, title, content FROM cheat_sheets WHERE id = ?", (cheat_id,))
+    row = cursor.fetchone()
+
+    if not row:
+        await callback.answer("❌ Материал не найден.", show_alert=True)
+        return
+
+    category, title, content = row
+    text = f"📌 <b>{title}</b>\n━━━━━━━━━━━━━━━━━━━\n\n{content}"
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Назад к списку", callback_data=f"cheat_cat_{category}")]
+        ]
+    )
+
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    await callback.answer()
 
 
 # КОМАНДЫ НАГРУЗКИ /work
@@ -350,7 +528,7 @@ async def process_note_text(message: Message, state: FSMContext):
         inline_keyboard=[[InlineKeyboardButton(text="◀️ Отмена", callback_data="main_menu_fixed")]]
     )
     await message.answer(
-        "📅 <b>Шаг 2/3:</b> Укажите дату и время выполнения\n<i>(например: 15.09.2026 в 14:30 или просто текстом):</i>",
+        "📅 <b>Шаг 2/3:</b> Укажите дату и время выполнения\n<i>(например: 15.09.2026 в 14:30):</i>",
         reply_markup=cancel_kb,
         parse_mode="HTML"
     )
@@ -535,7 +713,7 @@ async def send_video_handler(callback: CallbackQuery):
     asyncio.create_task(delete_warning())
 
 
-# ОСТАЛЬНЫЕ ХЕНДЛЕРЫ ЯЗЫКОВ, ПОМОЩИ И АДМИНКИ
+# ОСТАЛЬНЫЕ ХЕНДЛЕРЫ
 @router.callback_query(F.data.startswith("set_lang_"))
 async def set_language_callback(callback: CallbackQuery):
     lang = callback.data.split("_")[2]
@@ -685,14 +863,7 @@ async def admin_reply_to_user(message: Message, bot: Bot):
         await message.answer(f"❌ Ошибка отправки: {e}")
 
 
-@router.message(F.text)
-async def handle_any_text(message: Message):
-    if HEAVY_WORK_MODE and message.from_user.id not in ADMIN_IDS:
-        await message.answer("⚠️ Бот временно перегружен.")
-        return
-
-
-# АДМИН-ПАНЕЛЬ И ДОБАВЛЕНИЕ ВИДЕО С КАТЕГОРИЯМИ
+# АДМИН-ПАНЕЛЬ И УПРАВЛЕНИЕ ВИДЕО
 @router.callback_query(F.data == "admin_panel")
 async def admin_panel_handler(callback: CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
@@ -710,8 +881,10 @@ async def admin_stats(callback: CallbackQuery):
     total_videos = cursor.fetchone()[0]
     cursor.execute("SELECT COUNT(*) FROM notes")
     total_notes = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM cheat_sheets")
+    total_cheats = cursor.fetchone()[0]
     await callback.message.edit_text(
-        f"📊 <b>Статистика:</b>\n👥 Пользователей: {total_users}\n🎬 Видео: {total_videos}\n📝 Заметок: {total_notes}",
+        f"📊 <b>Статистика:</b>\n👥 Пользователей: {total_users}\n🎬 Видео: {total_videos}\n📝 Заметок: {total_notes}\n📚 Шпаргалок: {total_cheats}",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_panel")]]),
         parse_mode="HTML"
     )
@@ -857,7 +1030,7 @@ async def delete_video_handler(callback: CallbackQuery):
     _, _, v_id, page = callback.data.split("_")
     v_id = int(v_id)
     cursor.execute("DELETE FROM videos WHERE id = ?", (v_id,))
-    cursor.execute("DELETE FROM user_history WHERE video_id = ?", (v_id,))
+    cursor.execute("DELETE FROM user_history WHERE video_id = REGEX?", (v_id,)) # Безопасное удаление
     conn.commit()
     await callback.answer(f"✅ Видео #{v_id} удалено!", show_alert=True)
     callback.data = f"manage_videos_{page}"
@@ -878,6 +1051,7 @@ async def lifespan(app: FastAPI):
         await bot.set_my_commands([
             BotCommand(command="random", description="🎬 Случайное видео"),
             BotCommand(command="note", description="📝 Создать заметку"),
+            BotCommand(command="cheats", description="📚 Шпаргалки и база знаний"),
             BotCommand(command="setting", description="⚙️ Настройки повтора"),
             BotCommand(command="language", description="🌍 Сменить язык"),
             BotCommand(command="report", description="💬 Связь с админом"),
