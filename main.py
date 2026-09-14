@@ -4,6 +4,7 @@ import os
 import random
 import re
 import sqlite3
+from datetime import datetime
 from contextlib import asynccontextmanager
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command, CommandObject
@@ -63,6 +64,7 @@ CREATE TABLE IF NOT EXISTS videos (
 """
 )
 
+# Обновленная таблица заметок (добавлен флаг is_sent, чтобы не отправлять повторно)
 cursor.execute(
     """
 CREATE TABLE IF NOT EXISTS notes (
@@ -71,7 +73,8 @@ CREATE TABLE IF NOT EXISTS notes (
     note_text TEXT,
     note_datetime TEXT,
     media_file_id TEXT,
-    media_type TEXT
+    media_type TEXT,
+    is_sent INTEGER DEFAULT 0
 )
 """
 )
@@ -101,19 +104,15 @@ if cursor.fetchone()[0] == 0:
     cursor.executemany("INSERT INTO cheat_sheets (category, title, content) VALUES (?, ?, ?)", sample_cheats)
     conn.commit()
 
-for col_def in [
-    ("language", "TEXT DEFAULT 'ru'"),
-    ("caption", "TEXT"),
-    ("category", "TEXT DEFAULT 'kids'"),
+# Безопасное добавление колонок, если таблица уже существовала старая
+for col_def, table_name in [
+    (("language", "TEXT DEFAULT 'ru'"), "users"),
+    (("caption", "TEXT"), "videos"),
+    (("category", "TEXT DEFAULT 'kids'"), "videos"),
+    (("is_sent", "INTEGER DEFAULT 0"), "notes"),
 ]:
     try:
-        cursor.execute(f"ALTER TABLE users ADD COLUMN {col_def[0]} {col_def[1]}")
-        conn.commit()
-    except sqlite3.OperationalError:
-        pass
-
-    try:
-        cursor.execute(f"ALTER TABLE videos ADD COLUMN {col_def[0]} {col_def[1]}")
+        cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_def[0]} {col_def[1]}")
         conn.commit()
     except sqlite3.OperationalError:
         pass
@@ -149,36 +148,32 @@ class NoteStates(StatesGroup):
     waiting_for_media = State()
 
 
-# Тексты интерфейса
+# Тексты интерфейса (в стиле Glass / Neon)
 LANG_TEXTS = {
     "ru": {
         "welcome": (
-            "✨ <b>Главное меню бота</b>\n"
-            "━━━━━━━━━━━━━━━━━━━\n"
-            "🎬 Выберите категорию, скачайте медиа по ссылке или найдите шпаргалку.\n"
-            "📌 Используйте /help для справки."
+            "⚡️ <b>TOPORIK HUB | Главное меню</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "🔮 <i>Добро пожаловать в персональный хаб! Выберите нужный раздел ниже:</i>"
         ),
         "choose_lang": "🌍 <b>Выберите язык интерфейса</b>\nChoose your preferred language:",
         "lang_changed": "✅ Язык успешно изменен на русский!",
-        "btn_random": "🎬 Случайное видео",
+        "btn_random": "⚡️ Случайное видео",
         "btn_kids": "🧸 Категория: Kids",
         "btn_porno": "🔥 Категория: Porno",
         "btn_note": "📝 Создать заметку",
-        "btn_cheats": "📚 Шпаргалки / База знаний",
-        "btn_help": "🆘 Помощь",
+        "btn_cheats": "📚 База знаний / Шпоры",
+        "btn_help": "🆘 Справка",
         "btn_contact": "💬 Связь с админом",
         "btn_admin": "🛠 Админ-панель",
         "help_text": (
-            "📚 <b>Справочник по командам бота:</b>\n"
-            "━━━━━━━━━━━━━━━━━━━\n"
-            "• 🔗 <i>Просто отправь ссылку</i> (YouTube, TikTok и др.) — бот скачает медиа\n"
-            "• /random — получить случайный видеоматериал\n"
-            "• /note — создать новую заметку\n"
-            "• /cheats — открыть базу шпаргалок и материалов\n"
-            "• /setting — персональные настройки\n"
-            "• /language — сменить язык интерфейса\n"
-            "• /report — отправить сообщение администрации\n"
-            "━━━━━━━━━━━━━━━━━━━"
+            "📌 <b>Справочник по возможностям бота:</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "• 🔗 <b>Скачивание:</b> просто отправь ссылку (YouTube, TikTok и др.)\n"
+            "• 📝 <b>Умные заметки:</b> нажми «Создать заметку», напиши текст, задай дату/время в формате <code>ДД.ММ.ГГГГ ЧЧ:ММ</code> (например, <i>15.09.2026 14:30</i>), и бот пришлет её точно в срок!\n"
+            "• 📚 <b>Шпаргалки:</b> учебные материалы, код, команды по играм\n"
+            "• ⚙️ <b>Настройки:</b> управление историей и повторами видео\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━"
         ),
         "no_videos": "📭 В выбранной категории пока нет ни одного видеоматериала!",
         "video_deleted_warn": "💡 <b>Совет:</b> рекомендуем пересылать понравившиеся ролики в «Избранное», так как это сообщение автоматически удалится через 25 секунд!",
@@ -246,13 +241,74 @@ def get_admin_keyboard():
 
 
 # ==========================================
+# ФОНОВЫЙ ПЛАНИРОВЩИК ЗАМЕТОК
+# ==========================================
+async def notes_scheduler(bot: Bot):
+    """Каждую минуту проверяет базу данных на наличие наступивших заметок."""
+    while True:
+        try:
+            now_str = datetime.now().strftime("%d.%m.%Y %H:%M")
+            
+            # Выбираем неудаленные заметки, у которых время меньше или равно текущему
+            cursor.execute(
+                "SELECT id, user_id, note_text, media_file_id, media_type, note_datetime FROM notes WHERE is_sent = 0"
+            )
+            notes = cursor.fetchall()
+
+            for note_id, user_id, note_text, media_file_id, media_type, note_datetime in notes:
+                # Пытаемся распарсить дату из заметки
+                try:
+                    # Приводим к единому формату сравнения строк или объектов datetime
+                    clean_note_dt = note_datetime.replace(" в ", " ").strip()
+                    # Поддерживаем варианты разделителей
+                    for fmt in ("%d.%m.%Y %H:%M", "%d.%m.%Y-%H:%M"):
+                        try:
+                            parsed_dt = datetime.strptime(clean_note_dt, fmt)
+                            break
+                        except ValueError:
+                            parsed_dt = None
+                    
+                    # Если распарсили успешно, сравниваем с текущим временем (с точностью до минуты)
+                    if parsed_dt and datetime.now() >= parsed_dt:
+                        # Помечаем заметку как отправленную
+                        cursor.execute("UPDATE notes SET is_sent = 1 WHERE id = ?", (note_id,))
+                        conn.commit()
+
+                        text_to_send = (
+                            f"⏰ <b>Напоминание по заметке!</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"📌 {note_text}"
+                        )
+
+                        lang = get_user_lang(user_id)
+                        is_adm = user_id in ADMIN_IDS
+                        kb = get_user_keyboard(is_adm, lang)
+
+                        if media_file_id:
+                            if media_type == "photo":
+                                await bot.send_photo(chat_id=user_id, photo=media_file_id, caption=text_to_send, reply_markup=kb, parse_mode="HTML")
+                            elif media_type == "video":
+                                await bot.send_video(chat_id=user_id, video=media_file_id, caption=text_to_send, reply_markup=kb, parse_mode="HTML")
+                            else:
+                                await bot.send_document(chat_id=user_id, document=media_file_id, caption=text_to_send, reply_markup=kb, parse_mode="HTML")
+                        else:
+                            await bot.send_message(chat_id=user_id, text=text_to_send, reply_markup=kb, parse_mode="HTML")
+                except Exception as ex:
+                    logging.error(f"Ошибка при обработке конкретной заметки ID {note_id}: {ex}")
+
+        except Exception as e:
+            logging.error(f"Ошибка в планировщике заметок: {e}")
+        
+        await asyncio.sleep(60)  дверь каждую минуту
+
+
+# ==========================================
 # ФУНКЦИЯ 1: СКАЧИВАНИЕ ВИДЕО/МУЗЫКИ ПО ССЫЛКЕ (yt-dlp)
 # ==========================================
 @router.message(F.text.regexp(r"https?://[^\s]+"))
 async def download_media_link(message: Message):
     url = message.text.strip()
     
-    # Игнорируем длинные служебные ссылки и команды
     if len(url.split()) > 1 or url.startswith("/"):
         return
 
@@ -264,7 +320,7 @@ async def download_media_link(message: Message):
     ydl_opts = {
         'format': 'best[ext=mp4]/best',
         'outtmpl': output_template,
-        'max_filesize': 50 * 1024 * 1024, # Ограничение до 50 МБ для бесплатного хостинга
+        'max_filesize': 50 * 1024 * 1024,
         'noplaylist': True,
     }
 
@@ -289,7 +345,6 @@ async def download_media_link(message: Message):
 
             input_file = FSInputFile(downloaded_file)
             
-            # Определяем, аудио это или видео по расширению
             if downloaded_file.endswith(('.mp3', '.m4a', '.wav', '.opus', '.flac')):
                 await message.answer_audio(audio=input_file, caption="🎵 Скачанная музыка через бота")
             else:
@@ -311,7 +366,6 @@ async def download_media_link(message: Message):
         except Exception:
             pass
     finally:
-        # Очищаем временный файл
         if downloaded_file and os.path.exists(downloaded_file):
             try:
                 os.remove(downloaded_file)
@@ -342,7 +396,7 @@ async def cmd_cheats(event: Message | CallbackQuery):
         ]
     )
     
-    text = "📚 <b>База знаний и шпаргалок</b>\nВыберите интересующую вас категорию:"
+    text = "📚 <b>База знаний и шпаргалок</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━\nВыберите интересующую вас категорию:"
     if isinstance(event, CallbackQuery):
         await message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
     else:
@@ -363,7 +417,7 @@ async def show_cheat_category(callback: CallbackQuery):
     keyboard.append([InlineKeyboardButton(text="◀️ Назад к категориям", callback_data="open_cheats")])
 
     await callback.message.edit_text(
-        f"📂 <b>Категория: {cat_code.upper()}</b>\nВыберите материал для чтения:",
+        f"📂 <b>Категория: {cat_code.upper()}</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━\nВыберите материал для чтения:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
         parse_mode="HTML"
     )
@@ -382,7 +436,7 @@ async def view_cheat_item(callback: CallbackQuery):
         return
 
     category, title, content = row
-    text = f"📌 <b>{title}</b>\n━━━━━━━━━━━━━━━━━━━\n\n{content}"
+    text = f"📌 <b>{title}</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━\n\n{content}"
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -506,7 +560,7 @@ async def back_to_main_menu(callback: CallbackQuery):
     )
 
 
-# ЛОГИКА СОЗДАНИЯ ЗАМЕТОК (FSM)
+# ЛОГИКА СОЗДАНИЯ ЗАМЕТОК С ВЫБОРОМ ДАТЫ И ВРЕМЕНИ (FSM)
 @router.message(Command("note"))
 @router.callback_query(F.data == "start_note")
 async def cmd_note_start(event: Message | CallbackQuery, state: FSMContext):
@@ -517,7 +571,13 @@ async def cmd_note_start(event: Message | CallbackQuery, state: FSMContext):
     cancel_kb = InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="◀️ Отмена", callback_data="main_menu_fixed")]]
     )
-    await message.answer("📝 <b>Шаг 1/3:</b> Введите текст вашей заметки:", reply_markup=cancel_kb, parse_mode="HTML")
+    await message.answer(
+        "📝 <b>Шаг 1/3: Создание заметки</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Введите текст вашей заметки:", 
+        reply_markup=cancel_kb, 
+        parse_mode="HTML"
+    )
     await state.set_state(NoteStates.waiting_for_text)
 
 
@@ -528,7 +588,11 @@ async def process_note_text(message: Message, state: FSMContext):
         inline_keyboard=[[InlineKeyboardButton(text="◀️ Отмена", callback_data="main_menu_fixed")]]
     )
     await message.answer(
-        "📅 <b>Шаг 2/3:</b> Укажите дату и время выполнения\n<i>(например: 15.09.2026 в 14:30):</i>",
+        "📅 <b>Шаг 2/3: Время отправки</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Укажите дату и время, когда бот должен прислать вам эту заметку.\n"
+        "<i>Формат: ДД.ММ.ГГГГ ЧЧ:ММ</i>\n"
+        "▫️ Пример: <code>15.09.2026 14:30</code>",
         reply_markup=cancel_kb,
         parse_mode="HTML"
     )
@@ -537,7 +601,21 @@ async def process_note_text(message: Message, state: FSMContext):
 
 @router.message(NoteStates.waiting_for_datetime, F.text)
 async def process_note_datetime(message: Message, state: FSMContext):
-    await state.update_data(note_datetime=message.text)
+    dt_text = message.text.strip()
+    # Простейшая валидация введенного формата даты
+    try:
+        clean_dt = dt_text.replace(" в ", " ").strip()
+        datetime.strptime(clean_dt, "%d.%m.%Y %H:%M")
+    except ValueError:
+        await message.answer(
+            "⚠️ <b>Неверный формат даты и времени!</b>\n"
+            "Пожалуйста, используйте строго формат: <code>ДД.ММ.ГГГГ ЧЧ:ММ</code>\n"
+            "▫️ Пример: <code>15.09.2026 14:30</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    await state.update_data(note_datetime=dt_text)
     skip_kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="⏭ Пропустить медиа", callback_data="skip_media")],
@@ -545,7 +623,9 @@ async def process_note_datetime(message: Message, state: FSMContext):
         ]
     )
     await message.answer(
-        "📎 <b>Шаг 3/3:</b> Прикрепите фото или видео к заметке (или нажмите «Пропустить медиа»):",
+        "📎 <b>Шаг 3/3: Вложение</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Прикрепите фото, видео или документ к заметке (или нажмите «Пропустить медиа»):",
         reply_markup=skip_kb,
         parse_mode="HTML"
     )
@@ -583,15 +663,16 @@ async def save_note_to_db(message: Message, state: FSMContext, media_file_id: st
     note_datetime = data.get("note_datetime")
 
     cursor.execute(
-        "INSERT INTO notes (user_id, note_text, note_datetime, media_file_id, media_type) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO notes (user_id, note_text, note_datetime, media_file_id, media_type, is_sent) VALUES (?, ?, ?, ?, ?, 0)",
         (user_id, note_text, note_datetime, media_file_id, media_type)
     )
     conn.commit()
     await state.clear()
 
     success_text = (
-        f"✅ <b>Заметка успешно сохранена!</b>\n\n"
-        f"🕒 <b>Время:</b> {note_datetime}\n"
+        f"✅ <b>Заметка успешно запланирована!</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🕒 <b>Время отправки:</b> <code>{note_datetime}</code>\n"
         f"📌 <b>Текст:</b> {note_text}"
     )
 
@@ -769,7 +850,7 @@ async def callback_help(callback: CallbackQuery):
 async def callback_contact_admin(callback: CallbackQuery, state: FSMContext):
     await callback.message.answer(
         "💬 <b>Обратная связь</b>\n"
-        "━━━━━━━━━━━━━━━━━━━\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "Опишите вашу проблему или предложение в следующем сообщении:",
         parse_mode="HTML"
     )
@@ -883,201 +964,67 @@ async def admin_stats(callback: CallbackQuery):
     total_notes = cursor.fetchone()[0]
     cursor.execute("SELECT COUNT(*) FROM cheat_sheets")
     total_cheats = cursor.fetchone()[0]
-    await callback.message.edit_text(
-        f"📊 <b>Статистика:</b>\n👥 Пользователей: {total_users}\n🎬 Видео: {total_videos}\n📝 Заметок: {total_notes}\n📚 Шпаргалок: {total_cheats}",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_panel")]]),
-        parse_mode="HTML"
-    )
-
-
-@router.callback_query(F.data == "add_video")
-async def admin_add_video_start(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id not in ADMIN_IDS:
-        return
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="🧸 Kids", callback_data="category_kids"),
-                InlineKeyboardButton(text="🔥 Porno", callback_data="category_porno"),
-            ],
-            [InlineKeyboardButton(text="◀️ Отмена", callback_data="admin_panel")]
-        ]
-    )
-    await callback.message.edit_text("📤 <b>Выберите категорию для загрузки видео:</b>", reply_markup=keyboard, parse_mode="HTML")
-    await state.set_state(AdminStates.waiting_for_category)
-    await callback.answer()
-
-
-@router.callback_query(AdminStates.waiting_for_category, F.data.startswith("category_"))
-async def admin_get_category(callback: CallbackQuery, state: FSMContext):
-    category = callback.data.split("_")[1]
-    await state.update_data(category=category)
-    await callback.message.edit_text(
-        f"📤 <b>Загрузка в категорию: {category.upper()} (Шаг 1/2)</b>\nОтправьте видеофайл:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Отмена", callback_data="admin_panel")]]),
-        parse_mode="HTML"
-    )
-    await state.set_state(AdminStates.waiting_for_video)
-    await callback.answer()
-
-
-@router.message(AdminStates.waiting_for_video, F.video | F.document)
-async def admin_get_video_file(message: Message, state: FSMContext):
-    file_id = message.video.file_id if message.video else message.document.file_id
-    if file_id:
-        await state.update_data(file_id=file_id)
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="⏭ Пропустить подпись", callback_data="skip_caption")],
-                [InlineKeyboardButton(text="◀️ Отмена", callback_data="admin_panel")]
-            ]
-        )
-        await message.answer("📝 <b>Шаг 2/2:</b> Отправьте текст подписи к этому видео:", reply_markup=keyboard, parse_mode="HTML")
-        await state.set_state(AdminStates.waiting_for_caption)
-    else:
-        await message.answer("❌ Ошибка: отправьте видеофайл.")
-
-
-@router.message(AdminStates.waiting_for_caption, F.text)
-async def admin_save_video_with_caption(message: Message, state: FSMContext):
-    data = await state.get_data()
-    file_id = data.get("file_id")
-    category = data.get("category", "kids")
-    caption = message.text
-
-    cursor.execute("INSERT INTO videos (file_id, caption, category) VALUES (?, ?, ?)", (file_id, caption, category))
-    conn.commit()
-
-    is_admin = message.from_user.id in ADMIN_IDS
-    lang = get_user_lang(message.from_user.id)
-    await message.answer("✅ Видео с подписью успешно добавлено в базу!", reply_markup=get_user_keyboard(is_admin, lang), parse_mode="HTML")
-    await state.clear()
-
-
-@router.callback_query(AdminStates.waiting_for_caption, F.data == "skip_caption")
-async def admin_save_video_no_caption(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    file_id = data.get("file_id")
-    category = data.get("category", "kids")
-
-    cursor.execute("INSERT INTO videos (file_id, caption, category) VALUES (?, NULL, ?)", (file_id, category))
-    conn.commit()
-
-    is_admin = callback.from_user.id in ADMIN_IDS
-    lang = get_user_lang(callback.from_user.id)
-    await callback.message.edit_text("✅ Видео успешно добавлено (без подписи)!")
-    await callback.message.answer("Главное меню:", reply_markup=get_user_keyboard(is_admin, lang))
-    await state.clear()
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("manage_videos_"))
-async def manage_videos(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        return
-    page = int(callback.data.split("_")[2])
-    per_page = 5
-    cursor.execute("SELECT id, caption, category FROM videos ORDER BY id DESC")
-    all_videos = cursor.fetchall()
-    total = len(all_videos)
-
-    if total == 0:
-        await callback.message.edit_text("📭 В базе нет видео.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_panel")]]))
-        return
-
-    start, end = page * per_page, (page + 1) * per_page
-    keyboard = []
-    for v_id, v_cap, v_cat in all_videos[start:end]:
-        cap_text = f" — {v_cap[:15]}..." if v_cap else ""
-        keyboard.append([InlineKeyboardButton(text=f"[{v_cat}] #{v_id}{cap_text}", callback_data=f"v_info_{v_id}_{page}")])
     
-    nav = []
-    if page > 0: nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"manage_videos_{page - 1}"))
-    if end < total: nav.append(InlineKeyboardButton(text="➡️", callback_data=f"manage_videos_{page + 1}"))
-    if nav: keyboard.append(nav)
-    keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_panel")])
-
-    await callback.message.edit_text(f"🗑 <b>Управление видео (Всего: {total})</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("v_info_"))
-async def video_info_handler(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS: return
-    _, _, v_id, page = callback.data.split("_")
-    v_id = int(v_id)
-    cursor.execute("SELECT caption, category FROM videos WHERE id = ?", (v_id,))
-    row = cursor.fetchone()
-    if not row:
-        await callback.answer("❌ Не найдено", show_alert=True)
-        return
-    cap, cat = row
-    link = f"https://t.me/{BOT_USERNAME}?start=video_{v_id}"
     await callback.message.edit_text(
-        f"🎬 <b>Видео #{v_id}</b>\n📂 Категория: <b>{cat}</b>\n📝 Подпись: {cap or 'Нет'}\n\n🔗 <code>{link}</code>",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"del_video_{v_id}_{page}")],
-            [InlineKeyboardButton(text="◀️ Назад", callback_data=f"manage_videos_{page}")]
-        ]),
+        f"📊 <b>Статистика бота:</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👥 Пользователей: <code>{total_users}</code>\n"
+        f"🎬 Видеоматериалов: <code>{total_videos}</code>\n"
+        f"📝 Заметок в базе: <code>{total_notes}</code>\n"
+        f"📚 Шпаргалок: <code>{total_cheats}</code>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад в админ-панель", callback_data="admin_panel")]]),
         parse_mode="HTML"
     )
-    await callback.answer()
 
 
-@router.callback_query(F.data.startswith("del_video_"))
-async def delete_video_handler(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS: return
-    _, _, v_id, page = callback.data.split("_")
-    v_id = int(v_id)
-    cursor.execute("DELETE FROM videos WHERE id = ?", (v_id,))
-    cursor.execute("DELETE FROM user_history WHERE video_id = REGEX?", (v_id,)) # Безопасное удаление
-    conn.commit()
-    await callback.answer(f"✅ Видео #{v_id} удалено!", show_alert=True)
-    callback.data = f"manage_videos_{page}"
-    await manage_videos(callback)
+# ==========================================
+# FastAPI и Запуск приложения через Webhook
+# ==========================================
+app = FastAPI()
 
+@app.on_event("startup")
+async def on_startup():
+    bot = Bot(token=TOKEN)
+    dp = Dispatcher()
+    dp.include_router(router)
+    
+    # Установка команд бота в интерфейсе Telegram
+    await bot.set_my_commands([
+        BotCommand(command="start", description="🏠 Главное меню"),
+        BotCommand(command="note", description="📝 Создать заметку"),
+        BotCommand(command="cheats", description="📚 База знаний"),
+        BotCommand(command="random", description="⚡️ Случайное видео"),
+        BotCommand(command="setting", description="⚙️ Настройки"),
+        BotCommand(command="language", description="🌍 Сменить язык"),
+        BotCommand(command="help", description="🆘 Помощь"),
+    ])
 
-# ИНИЦИАЛИЗАЦИЯ И ЗАПУСК
-bot = Bot(token=TOKEN)
-dp = Dispatcher()
-dp.include_router(router)
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
     try:
         await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
-        logging.info("✅ Вебхук установлен")
-        
-        await bot.set_my_commands([
-            BotCommand(command="random", description="🎬 Случайное видео"),
-            BotCommand(command="note", description="📝 Создать заметку"),
-            BotCommand(command="cheats", description="📚 Шпаргалки и база знаний"),
-            BotCommand(command="setting", description="⚙️ Настройки повтора"),
-            BotCommand(command="language", description="🌍 Сменить язык"),
-            BotCommand(command="report", description="💬 Связь с админом"),
-            BotCommand(command="help", description="🆘 Справка"),
-        ])
     except Exception as e:
-        logging.error(f"❌ Ошибка: {e}")
-    yield
-    await bot.session.close()
+        logging.error(f"Ошибка установки вебхука: {e}")
 
-app = FastAPI(lifespan=lifespan)
+    # Запускаем фоновый планировщик проверки заметок в отдельной задаче asyncio
+    asyncio.create_task(notes_scheduler(bot))
+
 
 @app.post(WEBHOOK_PATH)
 async def bot_webhook(request: Request):
+    bot = Bot(token=TOKEN)
+    dp = Dispatcher()
+    dp.include_router(router)
+    
     from aiogram.types import Update
-    try:
-        update = Update.model_validate(await request.json(), context={"bot": bot})
-        await dp.feed_update(bot, update)
-    except Exception as e:
-        logging.error(f"❌ Ошибка апдейта: {e}")
-    return {"status": "ok"}
+    update_data = await request.json()
+    update = Update.model_validate(update_data, context={"bot": bot})
+    await dp.feed_update(bot, update)
+    return {"ok": True}
+
 
 @app.get("/")
-@app.head("/")
 async def index():
-    return {"status": "Bot is alive!"}
+    return {"status": "Bot is running successfully!"}
+
 
 if __name__ == "__main__":
-    uvicorn.run("bot:app", host="0.0.0.0", port=PORT)
+    uvicorn.run("main:app", host="0.0.0.0", port=PORT)
