@@ -1,17 +1,25 @@
 import asyncio
 import logging
+import os
 import sys
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Update
+from fastapi import FastAPI, Request
+import uvicorn
 
-# Токен твоего бота (лучше вынести в переменные окружения, но для примера можно указать здесь)
-TOKEN = "YOUR_BOT_TOKEN"
+# Настройки токена и вебхука для Render
+TOKEN = "8952197475:AAG5cY8qVLGbu-59TuHZuVWtoKg4KzCwjsQ"
+WEBHOOK_HOST = os.getenv("RENDER_EXTERNAL_URL", "https://your-app-name.onrender.com")
+WEBHOOK_PATH = f"/webhook/{TOKEN}"
+WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+PORT = int(os.getenv("PORT", 8000))
 
+logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 router = Router()
 
 def get_schedule_keyboard(day_label: str = "Сегодня"):
-    """Клавиатура для календаря и расписания с кнопками навигации"""
+    """Интерактивная клавиатура для календаря и расписания"""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -37,8 +45,11 @@ async def cmd_start(message: Message):
         ]
     )
     await message.answer(
-        "Привет! Это твой бот-организатор. Нажми кнопку ниже, чтобы открыть календарь:",
-        reply_markup=keyboard
+        "⚡️ <b>TOPORIK HUB | Организатор</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Привет! Нажми кнопку ниже, чтобы открыть календарь:",
+        reply_markup=keyboard,
+        parse_mode="HTML"
     )
 
 @router.message(Command("schedule"))
@@ -67,7 +78,6 @@ async def show_schedule(event: Message | CallbackQuery):
 async def process_schedule_callbacks(callback: CallbackQuery):
     action = callback.data.split("_")[1]
     
-    # Здесь можно обрабатывать логику переключения дней (Вчера / Завтра)
     if action == "prev":
         day_text = "Вчера"
     elif action == "next":
@@ -86,7 +96,7 @@ async def process_schedule_callbacks(callback: CallbackQuery):
         "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"▫️ <b>Состояние:</b> Просмотр на день ({day_text})\n"
         "▫️ <b>События:</b>\n"
-        "  • Данные загружены успешно\n\n"
+        "  • Данные успешно обновлены\n\n"
         "<i>Используйте кнопки ниже для навигации:</i>"
     )
     
@@ -100,17 +110,35 @@ async def back_to_main(callback: CallbackQuery):
             [InlineKeyboardButton(text="📅 Открыть календарь и расписание", callback_data="open_schedule")]
         ]
     )
-    await callback.message.edit_text("Вы вернулись в главное меню:", reply_markup=keyboard)
+    await callback.message.edit_text("🏠 Вы вернулись в главное меню:", reply_markup=keyboard)
     await callback.answer()
 
-async def main():
-    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+# FastAPI приложение для работы через вебхуки на Render
+app = FastAPI()
+
+@app.on_event("startup")
+async def on_startup():
+    bot = Bot(token=TOKEN)
+    try:
+        await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
+        logging.info(f"Вебхук успешно установлен: {WEBHOOK_URL}")
+    except Exception as e:
+        logging.error(f"Ошибка установки вебхука: {e}")
+
+@app.post(WEBHOOK_PATH)
+async def bot_webhook(request: Request):
     bot = Bot(token=TOKEN)
     dp = Dispatcher()
     dp.include_router(router)
     
-    await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+    update_data = await request.json()
+    update = Update.model_validate(update_data, context={"bot": bot})
+    await dp.feed_update(bot, update)
+    return {"ok": True}
+
+@app.get("/")
+async def index():
+    return {"status": "Bot is running via Webhook!"}
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    uvicorn.run("main:app", host="0.0.0.0", port=PORT)
