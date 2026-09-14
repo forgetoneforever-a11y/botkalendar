@@ -7,9 +7,13 @@ from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Update
 from aiogram.exceptions import TelegramBadRequest
 from fastapi import FastAPI, Request
+from pydantic import BaseModel
 import uvicorn
 
 TOKEN = "8952197475:AAG5cY8qVLGbu-59TuHZuVWtoKg4KzCwjsQ"
+# Твой Telegram ID, куда бот будет присылать уведомления с сайта (укажи свой числовой ID)
+ADMIN_CHAT_ID = 123456789  # <--- ЗАМЕНИ НА СВОЙ TELEGRAM ID
+
 WEBHOOK_HOST = os.getenv("RENDER_EXTERNAL_URL", "https://botkalendar.onrender.com")
 WEBHOOK_PATH = f"/webhook/{TOKEN}"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
@@ -19,6 +23,11 @@ logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
+
+# Модель данных для запросов от сайта
+class SiteNotification(BaseModel):
+    message: str
+    title: Optional[str] = "Уведомление с сайта"
 
 def get_schedule_keyboard(day_label: str = "Сегодня"):
     return InlineKeyboardMarkup(
@@ -75,7 +84,7 @@ async def show_schedule(event: Message | CallbackQuery):
         try:
             await message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
         except TelegramBadRequest:
-            pass # Игнорируем ошибку, если текст не изменился
+            pass
     else:
         await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
 
@@ -109,7 +118,7 @@ async def process_schedule_callbacks(callback: CallbackQuery):
     try:
         await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
     except TelegramBadRequest:
-        pass  # Ничего страшного, если контент совпал
+        pass
         
     await callback.answer()
 
@@ -136,6 +145,7 @@ async def on_startup():
     except Exception as e:
         logging.error(f"Ошибка установки вебхука: {e}")
 
+# Эндпоинт для приема вебхуков от Telegram
 @app.post(WEBHOOK_PATH)
 async def bot_webhook(request: Request):
     update_data = await request.json()
@@ -143,9 +153,19 @@ async def bot_webhook(request: Request):
     await dp.feed_update(bot, update)
     return {"ok": True}
 
+# НОВЫЙ ЭНДПОИНТ: Сайт может отправлять сюда POST-запросы, и бот перешлет их тебе
+@app.post("/api/send-from-site")
+async def send_from_site(data: SiteNotification):
+    try:
+        text = f"🌐 <b>Сообщение с сайта:</b>\n\n{data.message}"
+        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=text, parse_mode="HTML")
+        return {"status": "success", "detail": "Message sent to Telegram"}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
 @app.get("/")
 async def index():
-    return {"status": "Bot is running via Webhook!"}
+    return {"status": "Bot & API are running!"}
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=PORT)
