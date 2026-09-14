@@ -1,15 +1,14 @@
-import asyncio
-import logging
 import os
+import logging
 import sys
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Optional
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Update
 from aiogram.exceptions import TelegramBadRequest
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-import typing
 import uvicorn
 
 TOKEN = "8916954883:AAHZoGA8i2367ZdnJ0zOGXNS0svjgKWAiwE"
@@ -28,7 +27,7 @@ USER_CHAT_ID = None
 
 class SiteNote(BaseModel):
     message: str
-    title: typing.Optional[str] = "Новая заметка из календаря"
+    title: Optional[str] = "Новая заметка из календаря"
 
 def get_schedule_keyboard(day_label: str = "Сегодня"):
     return InlineKeyboardMarkup(
@@ -141,10 +140,9 @@ async def back_to_main(callback: CallbackQuery):
 
 app = FastAPI()
 
-# РАЗРЕШАЕМ ЗАПРОСЫ С ТВОЕГО САЙТА НА VERCEL (CORS)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Разрешить запросы с любых сайтов
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -183,4 +181,4 @@ async def index():
     return {"status": "Calendar Bot is running!"}
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=PORT)ы
+    uvicorn.run("main:app", host="0.0.0.0", port=PORT)
