@@ -8,11 +8,12 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.exceptions import TelegramBadRequest
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
+import typing
 import uvicorn
 
-TOKEN = "8952197475:AAG5cY8qVLGbu-59TuHZuVWtoKg4KzCwjsQ"
-# Твой Telegram ID, куда бот будет присылать уведомления с сайта (укажи свой числовой ID)
-ADMIN_CHAT_ID = 123456789  # <--- ЗАМЕНИ НА СВОЙ TELEGRAM ID
+# Твой актуальный токен бота
+TOKEN = "8916954883:AAHZoGA8i2367ZdnJ0zOGXNS0svjgKWAiwE"
+ADMIN_CHAT_ID = 123456789  # Укажи свой Telegram ID для уведомлений с сайта (опционально)
 
 WEBHOOK_HOST = os.getenv("RENDER_EXTERNAL_URL", "https://botkalendar.onrender.com")
 WEBHOOK_PATH = f"/webhook/{TOKEN}"
@@ -24,10 +25,9 @@ logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Модель данных для запросов от сайта
 class SiteNotification(BaseModel):
     message: str
-    title: Optional[str] = "Уведомление с сайта"
+    title: typing.Optional[str] = "Уведомление с сайта"
 
 def get_schedule_keyboard(day_label: str = "Сегодня"):
     return InlineKeyboardMarkup(
@@ -140,12 +140,12 @@ app = FastAPI()
 @app.on_event("startup")
 async def on_startup():
     try:
+        # Автоматически регистрируем правильный вебхук при запуске
         await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
         logging.info(f"Вебхук успешно установлен: {WEBHOOK_URL}")
     except Exception as e:
         logging.error(f"Ошибка установки вебхука: {e}")
 
-# Эндпоинт для приема вебхуков от Telegram
 @app.post(WEBHOOK_PATH)
 async def bot_webhook(request: Request):
     update_data = await request.json()
@@ -153,7 +153,6 @@ async def bot_webhook(request: Request):
     await dp.feed_update(bot, update)
     return {"ok": True}
 
-# НОВЫЙ ЭНДПОИНТ: Сайт может отправлять сюда POST-запросы, и бот перешлет их тебе
 @app.post("/api/send-from-site")
 async def send_from_site(data: SiteNotification):
     try:
