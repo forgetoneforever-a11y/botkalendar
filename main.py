@@ -7,6 +7,7 @@ from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Update
 from aiogram.exceptions import TelegramBadRequest
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import typing
 import uvicorn
@@ -23,7 +24,6 @@ logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Глобальная переменная для сохранения твоего Telegram ID
 USER_CHAT_ID = None
 
 class SiteNote(BaseModel):
@@ -51,7 +51,7 @@ def get_schedule_keyboard(day_label: str = "Сегодня"):
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     global USER_CHAT_ID
-    USER_CHAT_ID = message.from_user.id  # Автоматически сохраняем твой ID!
+    USER_CHAT_ID = message.from_user.id
     
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -141,6 +141,15 @@ async def back_to_main(callback: CallbackQuery):
 
 app = FastAPI()
 
+# РАЗРЕШАЕМ ЗАПРОСЫ С ТВОЕГО САЙТА НА VERCEL (CORS)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Разрешить запросы с любых сайтов
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 @app.on_event("startup")
 async def on_startup():
     try:
@@ -156,15 +165,14 @@ async def bot_webhook(request: Request):
     await dp.feed_update(bot, update)
     return {"ok": True}
 
-# Эндпоинт, куда сайт отправляет заметки
 @app.post("/api/send-from-site")
 async def send_from_site(data: SiteNote):
     global USER_CHAT_ID
     if not USER_CHAT_ID:
-        return {"status": "error", "detail": "Bot has no chat_id. Send /start to the bot first!"}
+        return {"status": "error", "detail": "Bot has no chat_id. Send /start first!"}
     
     try:
-        text = f"📌 <b>Заметка из календаря (сайт):</b>\n\n{data.message}"
+        text = f"📌 <b>Заметка из календаря:</b>\n\n{data.message}"
         await bot.send_message(chat_id=USER_CHAT_ID, text=text, parse_mode="HTML")
         return {"status": "success", "detail": "Note sent to Telegram"}
     except Exception as e:
@@ -175,4 +183,4 @@ async def index():
     return {"status": "Calendar Bot is running!"}
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=PORT)
+    uvicorn.run("main:app", host="0.0.0.0", port=PORT)ы
