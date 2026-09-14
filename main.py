@@ -11,9 +11,7 @@ from pydantic import BaseModel
 import typing
 import uvicorn
 
-# Твой актуальный токен бота
 TOKEN = "8916954883:AAHZoGA8i2367ZdnJ0zOGXNS0svjgKWAiwE"
-ADMIN_CHAT_ID = 123456789  # Укажи свой Telegram ID для уведомлений с сайта (опционально)
 
 WEBHOOK_HOST = os.getenv("RENDER_EXTERNAL_URL", "https://botkalendar.onrender.com")
 WEBHOOK_PATH = f"/webhook/{TOKEN}"
@@ -25,9 +23,12 @@ logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-class SiteNotification(BaseModel):
+# Глобальная переменная для сохранения твоего Telegram ID
+USER_CHAT_ID = None
+
+class SiteNote(BaseModel):
     message: str
-    title: typing.Optional[str] = "Уведомление с сайта"
+    title: typing.Optional[str] = "Новая заметка из календаря"
 
 def get_schedule_keyboard(day_label: str = "Сегодня"):
     return InlineKeyboardMarkup(
@@ -49,15 +50,18 @@ def get_schedule_keyboard(day_label: str = "Сегодня"):
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
+    global USER_CHAT_ID
+    USER_CHAT_ID = message.from_user.id  # Автоматически сохраняем твой ID!
+    
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📅 Открыть календарь и расписание", callback_data="open_schedule")]
         ]
     )
     await message.answer(
-        "⚡️ <b>TOPORIK HUB | Организатор</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "Привет! Нажми кнопку ниже, чтобы открыть календарь:",
+        f"📅 <b>Календарь-бот подключен!</b>\n"
+        f"Ваш Telegram ID сохранен: <code>{USER_CHAT_ID}</code>\n\n"
+        "Нажми кнопку ниже, чтобы открыть расписание:",
         reply_markup=keyboard,
         parse_mode="HTML"
     )
@@ -74,8 +78,8 @@ async def show_schedule(event: Message | CallbackQuery):
         "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "▫️ <b>День:</b> Сегодня\n"
         "▫️ <b>События / Пары:</b>\n"
-        "  • 09:00 — Занятия / Встречи\n"
-        "  • 12:00 — Свободное время\n\n"
+        "  • 09:00 — Занятия\n"
+        "  • 12:00 — Обед / Свободно\n\n"
         "<i>Используйте кнопки ниже для навигации:</i>"
     )
 
@@ -140,7 +144,6 @@ app = FastAPI()
 @app.on_event("startup")
 async def on_startup():
     try:
-        # Автоматически регистрируем правильный вебхук при запуске
         await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
         logging.info(f"Вебхук успешно установлен: {WEBHOOK_URL}")
     except Exception as e:
@@ -153,18 +156,23 @@ async def bot_webhook(request: Request):
     await dp.feed_update(bot, update)
     return {"ok": True}
 
+# Эндпоинт, куда сайт отправляет заметки
 @app.post("/api/send-from-site")
-async def send_from_site(data: SiteNotification):
+async def send_from_site(data: SiteNote):
+    global USER_CHAT_ID
+    if not USER_CHAT_ID:
+        return {"status": "error", "detail": "Bot has no chat_id. Send /start to the bot first!"}
+    
     try:
-        text = f"🌐 <b>Сообщение с сайта:</b>\n\n{data.message}"
-        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=text, parse_mode="HTML")
-        return {"status": "success", "detail": "Message sent to Telegram"}
+        text = f"📌 <b>Заметка из календаря (сайт):</b>\n\n{data.message}"
+        await bot.send_message(chat_id=USER_CHAT_ID, text=text, parse_mode="HTML")
+        return {"status": "success", "detail": "Note sent to Telegram"}
     except Exception as e:
         return {"status": "error", "detail": str(e)}
 
 @app.get("/")
 async def index():
-    return {"status": "Bot & API are running!"}
+    return {"status": "Calendar Bot is running!"}
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=PORT)
