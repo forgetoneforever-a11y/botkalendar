@@ -5,6 +5,7 @@ import sys
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Update
+from aiogram.exceptions import TelegramBadRequest
 from fastapi import FastAPI, Request
 import uvicorn
 
@@ -69,10 +70,14 @@ async def show_schedule(event: Message | CallbackQuery):
         "<i>Используйте кнопки ниже для навигации:</i>"
     )
 
+    keyboard = get_schedule_keyboard("Сегодня")
     if isinstance(event, CallbackQuery):
-        await message.edit_text(text, reply_markup=get_schedule_keyboard("Сегодня"), parse_mode="HTML")
+        try:
+            await message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+        except TelegramBadRequest:
+            pass # Игнорируем ошибку, если текст не изменился
     else:
-        await message.answer(text, reply_markup=get_schedule_keyboard("Сегодня"), parse_mode="HTML")
+        await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith("sched_"))
 async def process_schedule_callbacks(callback: CallbackQuery):
@@ -100,7 +105,12 @@ async def process_schedule_callbacks(callback: CallbackQuery):
         "<i>Используйте кнопки ниже для навигации:</i>"
     )
     
-    await callback.message.edit_text(text, reply_markup=get_schedule_keyboard(day_text), parse_mode="HTML")
+    keyboard = get_schedule_keyboard(day_text)
+    try:
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    except TelegramBadRequest:
+        pass  # Ничего страшного, если контент совпал
+        
     await callback.answer()
 
 @dp.callback_query(F.data == "main_menu")
@@ -110,7 +120,10 @@ async def back_to_main(callback: CallbackQuery):
             [InlineKeyboardButton(text="📅 Открыть календарь и расписание", callback_data="open_schedule")]
         ]
     )
-    await callback.message.edit_text("🏠 Вы вернулись в главное меню:", reply_markup=keyboard)
+    try:
+        await callback.message.edit_text("🏠 Вы вернулись в главное меню:", reply_markup=keyboard)
+    except TelegramBadRequest:
+        pass
     await callback.answer()
 
 app = FastAPI()
