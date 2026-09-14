@@ -2,29 +2,24 @@ import asyncio
 import logging
 import os
 import sys
-from aiogram import Bot, Dispatcher, F, Router
+from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, Update
 from fastapi import FastAPI, Request
 import uvicorn
 
-# Настройки токена и вебхука для Render
 TOKEN = "8952197475:AAG5cY8qVLGbu-59TuHZuVWtoKg4KzCwjsQ"
-WEBHOOK_HOST = os.getenv("RENDER_EXTERNAL_URL", "https://your-app-name.onrender.com")
+WEBHOOK_HOST = os.getenv("RENDER_EXTERNAL_URL", "https://botkalendar.onrender.com")
 WEBHOOK_PATH = f"/webhook/{TOKEN}"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 PORT = int(os.getenv("PORT", 8000))
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
-router = Router()
 
-# Инициализируем бота и диспетчер глобально один раз
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
-dp.include_router(router)
 
 def get_schedule_keyboard(day_label: str = "Сегодня"):
-    """Интерактивная клавиатура для календаря и расписания"""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -42,7 +37,7 @@ def get_schedule_keyboard(day_label: str = "Сегодня"):
         ]
     )
 
-@router.message(Command("start"))
+@dp.message(Command("start"))
 async def cmd_start(message: Message):
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -57,8 +52,8 @@ async def cmd_start(message: Message):
         parse_mode="HTML"
     )
 
-@router.message(Command("schedule"))
-@router.callback_query(F.data == "open_schedule")
+@dp.message(Command("schedule"))
+@dp.callback_query(F.data == "open_schedule")
 async def show_schedule(event: Message | CallbackQuery):
     message = event.message if isinstance(event, CallbackQuery) else event
     if isinstance(event, CallbackQuery):
@@ -79,7 +74,7 @@ async def show_schedule(event: Message | CallbackQuery):
     else:
         await message.answer(text, reply_markup=get_schedule_keyboard("Сегодня"), parse_mode="HTML")
 
-@router.callback_query(F.data.startswith("sched_"))
+@dp.callback_query(F.data.startswith("sched_"))
 async def process_schedule_callbacks(callback: CallbackQuery):
     action = callback.data.split("_")[1]
     
@@ -108,7 +103,7 @@ async def process_schedule_callbacks(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=get_schedule_keyboard(day_text), parse_mode="HTML")
     await callback.answer()
 
-@router.callback_query(F.data == "main_menu")
+@dp.callback_query(F.data == "main_menu")
 async def back_to_main(callback: CallbackQuery):
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -118,7 +113,6 @@ async def back_to_main(callback: CallbackQuery):
     await callback.message.edit_text("🏠 Вы вернулись в главное меню:", reply_markup=keyboard)
     await callback.answer()
 
-# FastAPI приложение
 app = FastAPI()
 
 @app.on_event("startup")
