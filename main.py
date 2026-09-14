@@ -18,6 +18,11 @@ PORT = int(os.getenv("PORT", 8000))
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 router = Router()
 
+# Инициализируем бота и диспетчер глобально один раз
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
+dp.include_router(router)
+
 def get_schedule_keyboard(day_label: str = "Сегодня"):
     """Интерактивная клавиатура для календаря и расписания"""
     return InlineKeyboardMarkup(
@@ -113,12 +118,11 @@ async def back_to_main(callback: CallbackQuery):
     await callback.message.edit_text("🏠 Вы вернулись в главное меню:", reply_markup=keyboard)
     await callback.answer()
 
-# FastAPI приложение для работы через вебхуки на Render
+# FastAPI приложение
 app = FastAPI()
 
 @app.on_event("startup")
 async def on_startup():
-    bot = Bot(token=TOKEN)
     try:
         await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
         logging.info(f"Вебхук успешно установлен: {WEBHOOK_URL}")
@@ -127,10 +131,6 @@ async def on_startup():
 
 @app.post(WEBHOOK_PATH)
 async def bot_webhook(request: Request):
-    bot = Bot(token=TOKEN)
-    dp = Dispatcher()
-    dp.include_router(router)
-    
     update_data = await request.json()
     update = Update.model_validate(update_data, context={"bot": bot})
     await dp.feed_update(bot, update)
