@@ -11,6 +11,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.exceptions import TelegramBadRequest
 import uvicorn
 
+# Новый токен вашего бота
 TOKEN = "8916954883:AAHZoGA8i2367ZdnJ0zOGXNS0svjgKWAiwE"
 
 WEBHOOK_HOST = os.getenv("RENDER_EXTERNAL_URL", "https://botkalendar.onrender.com")
@@ -23,6 +24,7 @@ logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+# Переменная для хранения ID чата пользователя, который нажал /start
 USER_CHAT_ID = None
 
 class SiteNote(BaseModel):
@@ -77,8 +79,8 @@ async def show_schedule(event: Message | CallbackQuery):
         "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "▫️ <b>День:</b> Сегодня\n"
         "▫️ <b>События / Пары:</b>\n"
-        "  • 09:00 — Занятия\n"
-        "  • 12:00 — Обед / Свободно\n\n"
+        "  • 08:30 — Технология машиностроения\n"
+        "  • 10:10 — Детали машин\n\n"
         "<i>Используйте кнопки ниже для навигации:</i>"
     )
 
@@ -138,6 +140,7 @@ async def back_to_main(callback: CallbackQuery):
         pass
     await callback.answer()
 
+# Инициализация FastAPI приложения
 app = FastAPI()
 
 app.add_middleware(
@@ -163,6 +166,7 @@ async def bot_webhook(request: Request):
     await dp.feed_update(bot, update)
     return {"ok": True}
 
+# Эндпоинт для приема заметок и чек-листов с сайта
 @app.post("/api/send-from-site")
 async def send_from_site(data: SiteNote):
     global USER_CHAT_ID
@@ -170,8 +174,8 @@ async def send_from_site(data: SiteNote):
         return {"status": "error", "detail": "Bot has no chat_id. Send /start first!"}
     
     try:
-        text = f"📌 <b>Заметка из календаря:</b>\n\n{data.message}"
-        await bot.send_message(chat_id=USER_CHAT_ID, text=text, parse_mode="HTML")
+        # Отправляем сформированное на сайте сообщение в Telegram
+        await bot.send_message(chat_id=USER_CHAT_ID, text=data.message, parse_mode="HTML")
         return {"status": "success", "detail": "Note sent to Telegram"}
     except Exception as e:
         return {"status": "error", "detail": str(e)}
